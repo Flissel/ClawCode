@@ -1,0 +1,41 @@
+[server]
+port = 8090
+
+[routing]
+# Architecture decisions → best model (your Pro/Max subscription)
+architect = "claude"
+
+# Bulk code generation → free via OpenRouter
+backend_gen = "claw:openrouter/qwen/qwen3.6-plus-preview:free"
+frontend_gen = "claw:openrouter/qwen/qwen3.6-plus-preview:free"
+api_gen = "claw:openrouter/qwen/qwen3.6-plus-preview:free"
+auth_gen = "claw:openrouter/qwen/qwen3.6-plus-preview:free"
+database_gen = "claw:openrouter/qwen/qwen3.6-plus-preview:free"
+infra_gen = "claw:openrouter/qwen/qwen3.6-plus-preview:free"
+
+# Bug fixing → GPT-5.4 via Kilo (good at debugging)
+fixer = "kilo"
+
+# Code review → Claude Haiku (cheap + fast)
+reviewer = "claw:openrouter/qwen/qwen3.6-plus-preview:free"
+
+# Testing → free model
+tester = "claw:openrouter/qwen/qwen3.6-plus-preview:free"
+
+# Default fallback for unknown agents
+default = "claw:openrouter/qwen/qwen3.6-plus-preview:free"
+
+[fallback]
+chain = ["claw:openrouter/qwen/qwen3.6-plus-preview:free", "claude", "kilo"]
+
+[backends.claude]
+timeout_secs = 300
+
+[backends.kilo]
+model = "openai/gpt-5.4"
+timeout_secs = 600
+
+[backends.claw]
+binary = "C:/Users/User/Desktop/ClawCode/rust/target/release/rusty-claude-cli.exe"
+config_path = "C:/Users/User/Desktop/Dave&Felix/DaveFelix-Coding-Engine/clawcode.toml"
+timeout_secs = 600
