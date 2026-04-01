@@ -35,11 +35,19 @@ done
 echo "[entrypoint] Claude auth check..."
 CLAUDE_OK=false
 
-# 2a. Check for mounted Pro/Max credentials
-if [ -f "/root/.claude/.credentials.json" ]; then
+# 2a. Check for credentials via Docker secret
+if [ -f "/run/secrets/claude_credentials" ]; then
+    echo "[entrypoint]   Pro/Max credentials found as Docker secret"
+    mkdir -p /root/.claude
+    cp /run/secrets/claude_credentials /root/.claude/.credentials.json
+    chmod 600 /root/.claude/.credentials.json
+    echo '{}' > /root/.claude/settings.json
+    CLAUDE_OK=true
+# 2b. Check for mounted Pro/Max credentials (legacy volume mount)
+elif [ -f "/root/.claude/.credentials.json" ]; then
     echo "[entrypoint]   Pro/Max credentials found at /root/.claude/.credentials.json"
     CLAUDE_OK=true
-# 2b. Check for API key
+# 2c. Check for API key
 elif [ -n "$ANTHROPIC_API_KEY" ]; then
     echo "[entrypoint]   ANTHROPIC_API_KEY set — using API key auth"
     # Create minimal Claude settings so CLI doesn't prompt for login
