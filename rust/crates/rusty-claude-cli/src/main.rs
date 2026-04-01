@@ -368,32 +368,52 @@ impl LiveCli {
     }
 
     fn run_turn(&mut self, input: &str) -> Result<(), Box<dyn std::error::Error>> {
-        let mut spinner = Spinner::new();
+        let is_tty = atty::is(atty::Stream::Stdout);
         let mut stdout = io::stdout();
-        spinner.tick(
-            "Waiting for Claude",
-            TerminalRenderer::new().color_theme(),
-            &mut stdout,
-        )?;
-        let result = self.runtime.run_turn(input, None);
-        match result {
-            Ok(_) => {
-                spinner.finish(
-                    "Claude response complete",
-                    TerminalRenderer::new().color_theme(),
-                    &mut stdout,
-                )?;
-                println!();
-                Ok(())
+
+        if is_tty {
+            let mut spinner = Spinner::new();
+            spinner.tick(
+                "Waiting for Claude",
+                TerminalRenderer::new().color_theme(),
+                &mut stdout,
+            )?;
+            let result = self.runtime.run_turn(input, None);
+            match result {
+                Ok(_) => {
+                    spinner.finish(
+                        "Claude response complete",
+                        TerminalRenderer::new().color_theme(),
+                        &mut stdout,
+                    )?;
+                    println!();
+                    Ok(())
+                }
+                Err(error) => {
+                    spinner.fail(
+                        "Claude request failed",
+                        TerminalRenderer::new().color_theme(),
+                        &mut stdout,
+                    )?;
+                    Err(Box::new(error))
+                }
             }
-            Err(error) => {
-                spinner.fail(
-                    "Claude request failed",
-                    TerminalRenderer::new().color_theme(),
-                    &mut stdout,
-                )?;
-                Err(Box::new(error))
+        } else {
+            // Non-interactive (piped/subprocess): no spinner, print assistant text
+            let summary = self.runtime.run_turn(input, None)?;
+            // Extract text from the last assistant message in the session
+            for msg in self.runtime.session().messages.iter().rev() {
+                if msg.role == MessageRole::Assistant {
+                    for block in &msg.blocks {
+                        if let ContentBlock::Text { text } = block {
+                            print!("{text}");
+                        }
+                    }
+                    break;
+                }
             }
+            println!();
+            Ok(())
         }
     }
 

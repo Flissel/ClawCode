@@ -13,7 +13,7 @@ use crate::config::ProviderEntry;
 const DEFAULT_BASE_URL: &str = "http://localhost:11434";
 
 pub struct OllamaProvider {
-    http: reqwest::Client,
+    http: reqwest::blocking::Client,
     base_url: String,
     model: String,
 }
@@ -25,7 +25,7 @@ impl OllamaProvider {
     /// Returns `RuntimeError` if the client cannot be created.
     pub fn new(entry: &ProviderEntry) -> Result<Self, RuntimeError> {
         Ok(Self {
-            http: reqwest::Client::builder()
+            http: reqwest::blocking::Client::builder()
                 .timeout(std::time::Duration::from_secs(300))
                 .build()
                 .map_err(|e| RuntimeError::new(format!("HTTP client: {e}")))?,
@@ -92,37 +92,29 @@ impl ApiClient for OllamaProvider {
             },
         };
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| RuntimeError::new(format!("tokio: {e}")))?;
+        let resp = self
+            .http
+            .post(format!("{}/api/chat", self.base_url))
+            .json(&body)
+            .send()
+            .map_err(|e| {
+                RuntimeError::new(format!(
+                    "Ollama not reachable at {}: {e}",
+                    self.base_url
+                ))
+            })?;
 
-        let response = rt.block_on(async {
-            let resp = self
-                .http
-                .post(format!("{}/api/chat", self.base_url))
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| {
-                    RuntimeError::new(format!(
-                        "Ollama not reachable at {}: {e}",
-                        self.base_url
-                    ))
-                })?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().unwrap_or_default();
+            return Err(RuntimeError::new(format!(
+                "Ollama HTTP {status}: {text}"
+            )));
+        }
 
-            if !resp.status().is_success() {
-                let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
-                return Err(RuntimeError::new(format!(
-                    "Ollama HTTP {status}: {text}"
-                )));
-            }
-
-            resp.json::<OllamaChatResponse>()
-                .await
-                .map_err(|e| RuntimeError::new(format!("Ollama parse: {e}")))
-        })?;
+        let response = resp
+            .json::<OllamaChatResponse>()
+            .map_err(|e| RuntimeError::new(format!("Ollama parse: {e}")))?;
 
         let mut events = Vec::new();
 

@@ -15,7 +15,7 @@ use crate::config::ProviderEntry;
 const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
 pub struct OpenRouterProvider {
-    http: reqwest::Client,
+    http: reqwest::blocking::Client,
     api_key: String,
     base_url: String,
     model: String,
@@ -35,7 +35,7 @@ impl OpenRouterProvider {
             .map_err(|_| RuntimeError::new(format!("{env_var} not set")))?;
 
         Ok(Self {
-            http: reqwest::Client::new(),
+            http: reqwest::blocking::Client::new(),
             api_key,
             base_url: entry
                 .base_url
@@ -182,25 +182,17 @@ impl ApiClient for OpenRouterProvider {
             max_tokens: Some(16384),
         };
 
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| RuntimeError::new(format!("tokio: {e}")))?;
-
-        let response = rt.block_on(async {
-            self.http
-                .post(format!("{}/chat/completions", self.base_url))
-                .header("Authorization", format!("Bearer {}", self.api_key))
-                .header("HTTP-Referer", "https://clawcode.dev")
-                .header("X-Title", "ClawCode")
-                .json(&body)
-                .send()
-                .await
-                .map_err(|e| RuntimeError::new(format!("OpenRouter request: {e}")))?
-                .json::<ChatCompletionResponse>()
-                .await
-                .map_err(|e| RuntimeError::new(format!("OpenRouter parse: {e}")))
-        })?;
+        let response = self
+            .http
+            .post(format!("{}/chat/completions", self.base_url))
+            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("HTTP-Referer", "https://clawcode.dev")
+            .header("X-Title", "ClawCode")
+            .json(&body)
+            .send()
+            .map_err(|e| RuntimeError::new(format!("OpenRouter request: {e}")))?
+            .json::<ChatCompletionResponse>()
+            .map_err(|e| RuntimeError::new(format!("OpenRouter parse: {e}")))?;
 
         let mut events = Vec::new();
 

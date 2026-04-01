@@ -7,6 +7,7 @@ publish.workspace = true
 
 [dependencies]
 api = { path = "../api" }
+atty = "0.2"
 commands = { path = "../commands" }
 compat-harness = { path = "../compat-harness" }
 providers = { path = "../providers" }

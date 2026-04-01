@@ -98,15 +98,32 @@ impl ApiClient for AnthropicAdapter {
             stream: false,
         };
 
-        // Run async in sync context
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| RuntimeError::new(format!("tokio: {e}")))?;
-
-        let response = rt
-            .block_on(self.client.send_message(&msg_request))
-            .map_err(|e| RuntimeError::new(format!("Anthropic API: {e}")))?;
+        // Run async in sync context — try existing runtime first, then create one
+        let response = match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                // Already in a tokio runtime — use it via spawn_blocking trick
+                std::thread::scope(|s| {
+                    s.spawn(|| {
+                        let rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .map_err(|e| RuntimeError::new(format!("tokio: {e}")))?;
+                        rt.block_on(self.client.send_message(&msg_request))
+                            .map_err(|e| RuntimeError::new(format!("Anthropic API: {e}")))
+                    })
+                    .join()
+                    .unwrap()
+                })?
+            }
+            Err(_) => {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| RuntimeError::new(format!("tokio: {e}")))?;
+                rt.block_on(self.client.send_message(&msg_request))
+                    .map_err(|e| RuntimeError::new(format!("Anthropic API: {e}")))?
+            }
+        };
 
         let mut events = Vec::new();
 
