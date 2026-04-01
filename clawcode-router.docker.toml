@@ -1,0 +1,45 @@
+# ClawCode Router config for Docker deployment
+# Paths reference container-internal locations
+
+[server]
+host = "0.0.0.0"
+port = 8090
+
+[routing]
+# Architecture decisions → best model (Claude Pro/Max or API)
+architect = "claude"
+
+# Bulk code generation → free via OpenRouter
+backend_gen = "claw:openrouter/qwen/qwen3.6-plus-preview:free"
+frontend_gen = "claw:openrouter/qwen/qwen3.6-plus-preview:free"
+api_gen = "claw:openrouter/qwen/qwen3.6-plus-preview:free"
+auth_gen = "claw:openrouter/qwen/qwen3.6-plus-preview:free"
+database_gen = "claw:openrouter/qwen/qwen3.6-plus-preview:free"
+infra_gen = "claw:openrouter/qwen/qwen3.6-plus-preview:free"
+
+# Bug fixing → GPT-5.4 via Kilo
+fixer = "kilo"
+
+# Code review + testing → free models
+reviewer = "claw:openrouter/qwen/qwen3.6-plus-preview:free"
+tester = "claw:openrouter/qwen/qwen3.6-plus-preview:free"
+
+# Default for unknown agents
+default = "claw:openrouter/qwen/qwen3.6-plus-preview:free"
+
+[fallback]
+chain = ["claw:openrouter/qwen/qwen3.6-plus-preview:free", "claude", "kilo"]
+
+[backends.claude]
+binary = "claude"
+timeout_secs = 300
+
+[backends.kilo]
+binary = "kilo"
+model = "openai/gpt-5.4"
+timeout_secs = 600
+
+[backends.claw]
+binary = "clawcode"
+config_path = "/app/clawcode-providers.toml"
+timeout_secs = 600
