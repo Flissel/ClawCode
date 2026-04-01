@@ -9,6 +9,7 @@ publish.workspace = true
 api = { path = "../api" }
 commands = { path = "../commands" }
 compat-harness = { path = "../compat-harness" }
+providers = { path = "../providers" }
 crossterm = "0.28"
 pulldown-cmark = "0.13"
 runtime = { path = "../runtime" }

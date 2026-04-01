@@ -42,8 +42,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             session_path,
             command,
         } => resume_session(&session_path, command),
-        CliAction::Prompt { prompt, model } => LiveCli::new(model, false)?.run_turn(&prompt)?,
-        CliAction::Repl { model } => run_repl(model)?,
+        CliAction::Prompt {
+            prompt,
+            model,
+            provider,
+            config_path,
+        } => LiveCli::new(model, false, provider, config_path)?.run_turn(&prompt)?,
+        CliAction::Repl {
+            model,
+            provider,
+            config_path,
+        } => run_repl(model, provider, config_path)?,
         CliAction::Help => print_help(),
     }
     Ok(())
@@ -64,15 +73,21 @@ enum CliAction {
     Prompt {
         prompt: String,
         model: String,
+        provider: Option<String>,
+        config_path: Option<PathBuf>,
     },
     Repl {
         model: String,
+        provider: Option<String>,
+        config_path: Option<PathBuf>,
     },
     Help,
 }
 
 fn parse_args(args: &[String]) -> Result<CliAction, String> {
     let mut model = DEFAULT_MODEL.to_string();
+    let mut provider: Option<String> = None;
+    let mut config_path: Option<PathBuf> = None;
     let mut rest = Vec::new();
     let mut index = 0;
 
@@ -89,6 +104,28 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
                 model = flag[8..].to_string();
                 index += 1;
             }
+            "--provider" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "missing value for --provider".to_string())?;
+                provider = Some(value.clone());
+                index += 2;
+            }
+            flag if flag.starts_with("--provider=") => {
+                provider = Some(flag[11..].to_string());
+                index += 1;
+            }
+            "--config" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "missing value for --config".to_string())?;
+                config_path = Some(PathBuf::from(value));
+                index += 2;
+            }
+            flag if flag.starts_with("--config=") => {
+                config_path = Some(PathBuf::from(&flag[9..]));
+                index += 1;
+            }
             other => {
                 rest.push(other.to_string());
                 index += 1;
@@ -97,7 +134,11 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
     }
 
     if rest.is_empty() {
-        return Ok(CliAction::Repl { model });
+        return Ok(CliAction::Repl {
+            model,
+            provider,
+            config_path,
+        });
     }
     if matches!(rest.first().map(String::as_str), Some("--help" | "-h")) {
         return Ok(CliAction::Help);
@@ -115,7 +156,12 @@ fn parse_args(args: &[String]) -> Result<CliAction, String> {
             if prompt.trim().is_empty() {
                 return Err("prompt subcommand requires a prompt string".to_string());
             }
-            Ok(CliAction::Prompt { prompt, model })
+            Ok(CliAction::Prompt {
+                prompt,
+                model,
+                provider,
+                config_path,
+            })
         }
         other => Err(format!("unknown subcommand: {other}")),
     }
@@ -238,8 +284,12 @@ fn resume_session(session_path: &Path, command: Option<String>) {
     }
 }
 
-fn run_repl(model: String) -> Result<(), Box<dyn std::error::Error>> {
-    let mut cli = LiveCli::new(model, true)?;
+fn run_repl(
+    model: String,
+    provider: Option<String>,
+    config_path: Option<PathBuf>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut cli = LiveCli::new(model, true, provider, config_path)?;
     let editor = input::LineEditor::new("› ");
     println!("Rusty Claude CLI interactive mode");
     println!("Type /help for commands. Shift+Enter or Ctrl+J inserts a newline.");
@@ -270,18 +320,46 @@ fn run_repl(model: String) -> Result<(), Box<dyn std::error::Error>> {
 struct LiveCli {
     model: String,
     system_prompt: Vec<String>,
-    runtime: ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>,
+    runtime: ConversationRuntime<Box<dyn ApiClient>, CliToolExecutor>,
 }
 
 impl LiveCli {
-    fn new(model: String, enable_tools: bool) -> Result<Self, Box<dyn std::error::Error>> {
+    fn new(
+        model: String,
+        enable_tools: bool,
+        provider: Option<String>,
+        config_path: Option<PathBuf>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let system_prompt = build_system_prompt()?;
-        let runtime = build_runtime(
+
+        let provider_name = provider.as_deref().unwrap_or("anthropic");
+        let client: Box<dyn ApiClient> = if provider_name == "anthropic" && config_path.is_none() {
+            // Default: use built-in Anthropic client (with streaming)
+            Box::new(AnthropicRuntimeClient::new(model.clone(), enable_tools)?)
+        } else {
+            // Multi-provider: load from config
+            let cfg_path = config_path
+                .unwrap_or_else(|| PathBuf::from("clawcode.toml"));
+            let mut config = providers::load_config(&cfg_path)
+                .map_err(|e| format!("config: {e}"))?;
+            // Override model from CLI flag if provider entry exists
+            if let Some(entry) = config.provider.get_mut(provider_name) {
+                if model != DEFAULT_MODEL {
+                    entry.model = model.clone();
+                }
+            }
+            providers::create_provider(&config, provider_name)
+                .map_err(|e| format!("provider '{provider_name}': {e}"))?
+        };
+
+        let runtime = ConversationRuntime::new(
             Session::new(),
-            model.clone(),
+            client,
+            CliToolExecutor::new(),
+            permission_policy_from_env(),
             system_prompt.clone(),
-            enable_tools,
-        )?;
+        );
+
         Ok(Self {
             model,
             system_prompt,
@@ -333,12 +411,16 @@ impl LiveCli {
     fn compact(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         let result = self.runtime.compact(CompactionConfig::default());
         let removed = result.removed_message_count;
-        self.runtime = build_runtime(
+        // Rebuild with default Anthropic provider for compaction
+        let client: Box<dyn ApiClient> =
+            Box::new(AnthropicRuntimeClient::new(self.model.clone(), true)?);
+        self.runtime = ConversationRuntime::new(
             result.compacted_session,
-            self.model.clone(),
+            client,
+            CliToolExecutor::new(),
+            permission_policy_from_env(),
             self.system_prompt.clone(),
-            true,
-        )?;
+        );
         println!("Compacted {removed} messages.");
         Ok(())
     }
@@ -353,21 +435,7 @@ fn build_system_prompt() -> Result<Vec<String>, Box<dyn std::error::Error>> {
     )?)
 }
 
-fn build_runtime(
-    session: Session,
-    model: String,
-    system_prompt: Vec<String>,
-    enable_tools: bool,
-) -> Result<ConversationRuntime<AnthropicRuntimeClient, CliToolExecutor>, Box<dyn std::error::Error>>
-{
-    Ok(ConversationRuntime::new(
-        session,
-        AnthropicRuntimeClient::new(model, enable_tools)?,
-        CliToolExecutor::new(),
-        permission_policy_from_env(),
-        system_prompt,
-    ))
-}
+// build_runtime removed — LiveCli::new handles provider selection directly
 
 struct AnthropicRuntimeClient {
     runtime: tokio::runtime::Runtime,
@@ -631,17 +699,25 @@ fn convert_messages(messages: &[ConversationMessage]) -> Vec<InputMessage> {
 }
 
 fn print_help() {
-    println!("rusty-claude-cli");
+    println!("clawcode — Multi-Provider Vibecoder CLI");
     println!();
     println!("Usage:");
-    println!("  rusty-claude-cli [--model MODEL]             Start interactive REPL");
-    println!(
-        "  rusty-claude-cli [--model MODEL] prompt TEXT Send one prompt and stream the response"
-    );
-    println!("  rusty-claude-cli dump-manifests");
-    println!("  rusty-claude-cli bootstrap-plan");
-    println!("  rusty-claude-cli system-prompt [--cwd PATH] [--date YYYY-MM-DD]");
-    println!("  rusty-claude-cli --resume SESSION.json [/compact]");
+    println!("  clawcode [OPTIONS]                          Start interactive REPL");
+    println!("  clawcode [OPTIONS] prompt TEXT               Send one prompt");
+    println!("  clawcode dump-manifests");
+    println!("  clawcode bootstrap-plan");
+    println!("  clawcode system-prompt [--cwd PATH] [--date YYYY-MM-DD]");
+    println!("  clawcode --resume SESSION.json [/compact]");
+    println!();
+    println!("Options:");
+    println!("  --model MODEL       LLM model (default: claude-sonnet-4-20250514)");
+    println!("  --provider NAME     Provider: anthropic, openrouter, ollama (default: anthropic)");
+    println!("  --config PATH       Config file (default: clawcode.toml)");
+    println!();
+    println!("Examples:");
+    println!("  clawcode prompt hello world");
+    println!("  clawcode --provider openrouter --model qwen/qwen3-coder:free prompt build an API");
+    println!("  clawcode --provider ollama --model qwen2.5-coder:7b");
 }
 
 #[cfg(test)]
@@ -656,6 +732,8 @@ mod tests {
             parse_args(&[]).expect("args should parse"),
             CliAction::Repl {
                 model: DEFAULT_MODEL.to_string(),
+                provider: None,
+                config_path: None,
             }
         );
     }
@@ -672,6 +750,8 @@ mod tests {
             CliAction::Prompt {
                 prompt: "hello world".to_string(),
                 model: DEFAULT_MODEL.to_string(),
+                provider: None,
+                config_path: None,
             }
         );
     }
